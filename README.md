@@ -10,9 +10,27 @@ A runnable prototype for the Innodata AI Hackathon Coding Task Factory challenge
 5. View the workflow through a FastAPI web dashboard.
 
 ## Current implementation vs roadmap
-**Implemented:** deterministic template-based task generation, task manifests, reference files, fixed test cases, candidate evaluation, JSON reports, FastAPI dashboard and API endpoints.
+**Implemented:** deterministic template-based task generation, task manifests, reference files, fixed test cases, candidate evaluation, JSON reports, FastAPI chat interface and OpenAI Responses API conversational assistant (requires OPENAI_API_KEY).
 
 **Planned, not yet implemented:** LLM-generated task diversity, synthetic image generation, multimodal model evaluation, Docker/Harbor isolation, hidden test sets, anti-leakage controls and model-wise benchmarking.
+
+## Ask Benchmark AI (OpenAI-powered chat)
+
+The home page is a chat-first expert interface backed by the OpenAI Responses API. Configure the API key on the server; never place it in browser JavaScript or commit it to Git.
+
+Linux/macOS:
+```bash
+export OPENAI_API_KEY="your-project-api-key"
+export OPENAI_MODEL="gpt-6.2-sol"
+```
+
+Windows PowerShell:
+```powershell
+$env:OPENAI_API_KEY="your-project-api-key"
+$env:OPENAI_MODEL="gpt-6.2-sol"
+```
+
+The API key must belong to an OpenAI API Platform project with billing/usage access. API usage is billed separately from a ChatGPT subscription. Conversation IDs are currently held in application memory and reset when the server restarts; production should persist sessions in a database.
 
 ## Run locally
 Requires Python 3.10+.
