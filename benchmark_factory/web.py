@@ -16,6 +16,7 @@ EXAMPLE = BASE / "examples/candidate_solution.py"
 
 class ChatMessage(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+    session_id: str = Field(min_length=16, max_length=80)
 
 
 CHAT_PAGE = r"""
@@ -56,9 +57,9 @@ button:disabled{opacity:.55;cursor:wait}.hint{font-size:12px;color:var(--muted);
 <div class="composer"><form id="form"><textarea id="message" rows="1" placeholder="Ask anything about coding benchmarks..." aria-label="Your message" required></textarea><button id="send" type="submit">Send</button></form><div class="hint">Enter to send · Shift + Enter for a new line</div><div class="links"><a href="/api/tasks">Tasks</a><a href="/api/reports">Reports</a><a href="/docs">API documentation</a></div></div>
 </main>
 <script>
-const chat=document.getElementById('chat'),form=document.getElementById('form'),input=document.getElementById('message'),send=document.getElementById('send');
+const chat=document.getElementById('chat'),form=document.getElementById('form'),input=document.getElementById('message'),send=document.getElementById('send');\nconst sessionId=sessionStorage.getItem('rbo_benchmark_session')||('rbo_'+crypto.randomUUID());sessionStorage.setItem('rbo_benchmark_session',sessionId);
 function add(text,kind){const node=document.createElement('div');node.className='msg '+kind;node.textContent=text;chat.appendChild(node);node.scrollIntoView({behavior:'smooth',block:'end'});return node}
-form.addEventListener('submit',async e=>{e.preventDefault();const message=input.value.trim();if(!message)return;add(message,'user');input.value='';send.disabled=true;send.textContent='...';const pending=add('Thinking through your request...','bot');try{const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Request failed');pending.textContent=data.reply;if(data.result)pending.textContent+='\n\nBackend result:\n'+JSON.stringify(data.result,null,2)}catch(err){pending.textContent='I could not complete that request: '+err.message+' Please try again.'}finally{send.disabled=false;send.textContent='Send';input.focus()}});
+form.addEventListener('submit',async e=>{e.preventDefault();const message=input.value.trim();if(!message)return;add(message,'user');input.value='';send.disabled=true;send.textContent='...';const pending=add('Thinking through your request...','bot');try{const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,session_id:sessionId})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Request failed');pending.textContent=data.reply;if(data.result)pending.textContent+='\n\nBackend result:\n'+JSON.stringify(data.result,null,2)}catch(err){pending.textContent='I could not complete that request: '+err.message+' Please try again.'}finally{send.disabled=false;send.textContent='Send';input.focus()}});
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.requestSubmit()}});
 </script>
 </body></html>
@@ -72,8 +73,25 @@ def home():
 
 @app.post("/api/chat")
 def chat(message: ChatMessage):
+    from .ai_assistant import get_assistant_reply, AssistantConfigurationError
+
     text = message.message.strip()
     normalized = text.lower()
+
+    # Real OpenAI Responses API conversation; fail clearly if credentials are not configured.
+    try:
+        reply = get_assistant_reply(message.session_id, text)
+    except AssistantConfigurationError as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail=f"AI provider request failed: {type(exc).__name__}") from exc
+
+    # The assistant can explain and guide freely. Only deterministic backend actions
+    # below are allowed to claim task creation or evaluation has actually happened.
+    if not any(word in normalized for word in ("evaluate", "evaluation", "run test", "test my", "check code", "score", "generate", "create", "make", "banao", "बनाओ", "तैयार")):
+        return {"reply": reply}
 
     if any(word in normalized for word in ("evaluate", "evaluation", "run test", "test my", "check code", "score")):
         task = TASKS / "add-two-numbers"
@@ -82,8 +100,7 @@ def chat(message: ChatMessage):
         report = evaluate_candidate(task, EXAMPLE, REPORTS)
         result = json.loads(report.read_text(encoding="utf-8"))
         return {
-            "reply": (
-                "Evaluation completed for the bundled trusted example candidate. "
+            "reply": reply + "\\n\\nEvaluation completed for the bundled trusted example candidate. "
                 "The current prototype supports this fixed Python add_numbers task only. "
                 "It does not yet accept arbitrary uploaded code or run untrusted code safely."
             ),
@@ -94,8 +111,7 @@ def chat(message: ChatMessage):
         path = generate_task("Add two numbers", TASKS)
         manifest = json.loads((path / "task.json").read_text(encoding="utf-8"))
         return {
-            "reply": (
-                "A sample coding task package has been generated successfully. "
+            "reply": reply + "\\n\\nA sample coding task package has been generated successfully. "
                 "This first version currently generates the fixed Python add_numbers exercise; "
                 "custom problem generation and difficulty selection are planned next."
             ),
