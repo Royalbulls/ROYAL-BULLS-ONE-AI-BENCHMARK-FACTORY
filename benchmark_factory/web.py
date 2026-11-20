@@ -1,14 +1,14 @@
 import json
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .generator import generate_task
 from .runner import evaluate_candidate
 
-app = FastAPI(title="ROYAL BULLS ONE — Ask Benchmark AI", version="0.2.0")
+app = FastAPI(title="ROYAL BULLS ONE — Ask Benchmark AI", version="0.3.0")
 BASE = Path.cwd()
 TASKS, REPORTS = BASE / "data/tasks", BASE / "data/reports"
 EXAMPLE = BASE / "examples/candidate_solution.py"
@@ -37,7 +37,6 @@ main{max-width:900px;margin:24px auto;padding:0 16px;display:flex;flex-direction
 .msg{max-width:85%;padding:13px 16px;border-radius:17px;white-space:pre-wrap;overflow-wrap:anywhere}
 .bot{background:#fff;border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:5px}
 .user{background:var(--blue);color:#fff;align-self:flex-end;border-bottom-right-radius:5px}
-.meta{font-size:11px;color:var(--muted);margin-top:6px}.user .meta{color:#dbeafe}
 .composer{position:sticky;bottom:0;background:var(--bg);padding:12px 0 18px}
 form{display:flex;gap:9px;background:#fff;border:1px solid #cbd5e1;border-radius:18px;padding:8px;box-shadow:0 8px 30px #17243a0d}
 textarea{border:0;outline:0;resize:none;flex:1;min-height:42px;max-height:130px;padding:10px;font:inherit}
@@ -52,12 +51,15 @@ button:disabled{opacity:.55;cursor:wait}.hint{font-size:12px;color:var(--muted);
 <main>
 <section class="intro"><h1>Ask your Benchmark Expert</h1><p>Describe what you need. Get guided help with coding tasks and evaluation.</p></section>
 <section id="chat" aria-live="polite">
-<div class="msg bot">Hello! I’m Ask Benchmark AI. I can help create coding benchmark tasks, explain test cases and evaluate a trusted Python candidate using the current prototype.\n\nWhat would you like to do?</div>
+<div class="msg bot">Hello! I’m Ask Benchmark AI. I can help create coding benchmark tasks, explain test cases and evaluate a trusted Python candidate using the current prototype.
+
+What would you like to do?</div>
 </section>
 <div class="composer"><form id="form"><textarea id="message" rows="1" placeholder="Ask anything about coding benchmarks..." aria-label="Your message" required></textarea><button id="send" type="submit">Send</button></form><div class="hint">Enter to send · Shift + Enter for a new line</div><div class="links"><a href="/api/tasks">Tasks</a><a href="/api/reports">Reports</a><a href="/docs">API documentation</a></div></div>
 </main>
 <script>
-const chat=document.getElementById('chat'),form=document.getElementById('form'),input=document.getElementById('message'),send=document.getElementById('send');\nconst sessionId=sessionStorage.getItem('rbo_benchmark_session')||('rbo_'+crypto.randomUUID());sessionStorage.setItem('rbo_benchmark_session',sessionId);
+const chat=document.getElementById('chat'),form=document.getElementById('form'),input=document.getElementById('message'),send=document.getElementById('send');
+const sessionId=sessionStorage.getItem('rbo_benchmark_session')||('rbo_'+crypto.randomUUID());sessionStorage.setItem('rbo_benchmark_session',sessionId);
 function add(text,kind){const node=document.createElement('div');node.className='msg '+kind;node.textContent=text;chat.appendChild(node);node.scrollIntoView({behavior:'smooth',block:'end'});return node}
 form.addEventListener('submit',async e=>{e.preventDefault();const message=input.value.trim();if(!message)return;add(message,'user');input.value='';send.disabled=true;send.textContent='...';const pending=add('Thinking through your request...','bot');try{const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,session_id:sessionId})});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Request failed');pending.textContent=data.reply;if(data.result)pending.textContent+='\n\nBackend result:\n'+JSON.stringify(data.result,null,2)}catch(err){pending.textContent='I could not complete that request: '+err.message+' Please try again.'}finally{send.disabled=false;send.textContent='Send';input.focus()}});
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.requestSubmit()}});
@@ -75,62 +77,51 @@ def home():
 def chat(message: ChatMessage):
     from .ai_assistant import get_assistant_reply, AssistantConfigurationError
 
-    text = message.message.strip()
-    normalized = text.lower()
+    user_text = message.message.strip()
+    normalized = user_text.lower()
 
-    # Real OpenAI Responses API conversation; fail clearly if credentials are not configured.
     try:
-        reply = get_assistant_reply(message.session_id, text)
+        reply = get_assistant_reply(message.session_id, user_text)
     except AssistantConfigurationError as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        from fastapi import HTTPException
         raise HTTPException(status_code=502, detail=f"AI provider request failed: {type(exc).__name__}") from exc
 
-    # The assistant can explain and guide freely. Only deterministic backend actions
-    # below are allowed to claim task creation or evaluation has actually happened.
-    if not any(word in normalized for word in ("evaluate", "evaluation", "run test", "test my", "check code", "score", "generate", "create", "make", "banao", "बनाओ", "तैयार")):
-        return {"reply": reply}
+    evaluate_intent = any(word in normalized for word in (
+        "evaluate", "evaluation", "run test", "test my", "check code", "score", "जांचो", "टेस्ट चलाओ"
+    ))
+    generate_intent = any(word in normalized for word in (
+        "generate", "create", "make", "banao", "बनाओ", "तैयार", "बनाकर"
+    )) and any(word in normalized for word in (
+        "task", "benchmark", "coding", "कोड", "टास्क"
+    ))
 
-    if any(word in normalized for word in ("evaluate", "evaluation", "run test", "test my", "check code", "score")):
+    if evaluate_intent:
         task = TASKS / "add-two-numbers"
         if not (task / "task.json").exists():
             generate_task("Add two numbers", TASKS)
         report = evaluate_candidate(task, EXAMPLE, REPORTS)
         result = json.loads(report.read_text(encoding="utf-8"))
         return {
-            "reply": reply + "\\n\\nEvaluation completed for the bundled trusted example candidate. "
-                "The current prototype supports this fixed Python add_numbers task only. "
-                "It does not yet accept arbitrary uploaded code or run untrusted code safely."
-            ),
+            "reply": reply + "\n\nBackend evaluation completed for the bundled trusted example candidate. The current prototype supports this fixed Python add_numbers task only. Arbitrary uploaded code is not supported, and candidate execution is not sandboxed.",
             "result": result,
         }
 
-    if any(word in normalized for word in ("generate", "create", "make", "banao", "बनाओ", "तैयार")) and any(word in normalized for word in ("task", "benchmark", "coding", "कोड", "टास्क")):
+    if generate_intent:
         path = generate_task("Add two numbers", TASKS)
         manifest = json.loads((path / "task.json").read_text(encoding="utf-8"))
+        cases = json.loads((path / manifest["tests_file"]).read_text(encoding="utf-8"))
         return {
-            "reply": reply + "\\n\\nA sample coding task package has been generated successfully. "
-                "This first version currently generates the fixed Python add_numbers exercise; "
-                "custom problem generation and difficulty selection are planned next."
-            ),
+            "reply": reply + "\n\nBackend generated the current sample task package. This version still generates the fixed Python add_numbers exercise; custom problem generation and difficulty selection are not implemented yet.",
             "result": {
                 "task_id": manifest["task_id"],
                 "language": manifest["language"],
                 "task_path": str(path),
-                "test_case_count": len(json.loads((path / manifest["tests_file"]).read_text(encoding="utf-8"))),
+                "test_case_count": len(cases),
             },
         }
 
-    return {
-        "reply": (
-            "I can guide you through the current Coding Task Factory prototype. "
-            "Right now it can generate one fixed Python addition task and evaluate the bundled trusted example. "
-            "It is not yet connected to an LLM, so this chat uses rule-based routing rather than open-ended AI reasoning. "
-            "Would you like me to generate the sample task or run its evaluation?"
-        )
-    }
+    return {"reply": reply}
 
 
 @app.post("/generate")
